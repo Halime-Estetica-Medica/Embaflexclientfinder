@@ -145,7 +145,8 @@ app.post('/buscar-leads', async (req, res) => {
     }
 
     const conMail = resultados.filter(r => r.tieneMail).length;
-    console.log(`✓ ${resultados.length} marcas procesadas, ${conMail} con mails`);
+    const conHunter = resultados.filter(r => r.fuentes.includes('hunter')).length;
+    console.log(`✓ ${resultados.length} marcas procesadas, ${conMail} con mails (${conHunter} via Hunter)`);
     res.json({ ok: true, total: resultados.length, conMail, resultados });
   } catch (e) {
     console.error('Error:', e.message);
