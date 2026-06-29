@@ -2,7 +2,6 @@ const express = require('express');
 const nodemailer = require('nodemailer');
 const cors = require('cors');
 const axios = require('axios');
-const cheerio = require('cheerio');
 
 const app = express();
 app.use(express.json());
@@ -15,11 +14,11 @@ const HEADERS = {
   'Accept-Language': 'es-AR,es;q=0.9',
 };
 
-// ── Extraer mails de HTML ────────────────────────────────────────────────────
+// ── Extraer mails de texto HTML con regex puro (sin cheerio) ─────────────────
 function extraerMails(html) {
   const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
   const encontrados = [...new Set((html.match(emailRegex) || []))];
-  const excluir = ['example', 'sentry', 'wixpress', 'schema', 'jquery', 'email@', 'user@', 'nombre@', 'correo@', 'noreply', 'no-reply', '.png', '.jpg', '.svg', '.gif', 'test@'];
+  const excluir = ['example', 'sentry', 'wixpress', 'schema', 'jquery', 'email@', 'user@', 'nombre@', 'correo@', 'noreply', 'no-reply', '.png', '.jpg', '.svg', '.gif', 'test@', 'youremail', 'domain.com'];
   const filtrados = encontrados.filter(m => !excluir.some(e => m.toLowerCase().includes(e)));
   const prioridad = ['compras', 'proveedores', 'marketing', 'hola', 'contacto', 'info', 'ventas', 'comercial', 'admin', 'hello'];
   filtrados.sort((a, b) => {
@@ -33,26 +32,30 @@ function extraerMails(html) {
   return filtrados.slice(0, 3);
 }
 
+// ── Extraer URL de contacto con regex (sin cheerio) ──────────────────────────
+function extraerContactUrl(html, baseUrl) {
+  const linkRegex = /href=["']([^"']*contacto[^"']*|[^"']*contact[^"']*)["']/gi;
+  const match = linkRegex.exec(html);
+  if (!match) return null;
+  const href = match[1];
+  if (href.startsWith('http')) return href;
+  return baseUrl.replace(/\/$/, '') + '/' + href.replace(/^\//, '');
+}
+
 // ── Scrapear sitio web ───────────────────────────────────────────────────────
 async function scrapearSitio(url) {
   try {
     if (!url.startsWith('http')) url = 'https://' + url;
     const res = await axios.get(url, { headers: HEADERS, timeout: 8000, maxRedirects: 3 });
-    const $ = cheerio.load(res.data);
-    let contactUrl = null;
-    $('a').each((_, el) => {
-      const href = $(el).attr('href') || '';
-      const text = $(el).text().toLowerCase();
-      if (!contactUrl && (text.includes('contacto') || text.includes('contact') || href.includes('contact'))) {
-        contactUrl = href.startsWith('http') ? href : url.replace(/\/$/, '') + '/' + href.replace(/^\//, '');
-      }
-    });
     let mails = extraerMails(res.data);
-    if (contactUrl && mails.length === 0) {
-      try {
-        const res2 = await axios.get(contactUrl, { headers: HEADERS, timeout: 6000 });
-        mails = extraerMails(res2.data);
-      } catch (_) {}
+    if (mails.length === 0) {
+      const contactUrl = extraerContactUrl(res.data, url);
+      if (contactUrl) {
+        try {
+          const res2 = await axios.get(contactUrl, { headers: HEADERS, timeout: 6000 });
+          mails = extraerMails(res2.data);
+        } catch (_) {}
+      }
     }
     return mails;
   } catch (e) {
@@ -121,26 +124,20 @@ app.get('/', (req, res) => {
 app.post('/buscar-leads', async (req, res) => {
   const { rubro, zona = '', keywords = '', hunterApiKey = '' } = req.body;
   if (!rubro) return res.status(400).json({ error: 'Falta rubro' });
-
   console.log(`🔍 Buscando: ${rubro} ${zona}`);
   try {
     const empresas = await buscarEnGoogle(rubro, zona, keywords);
     const resultados = [];
-
     for (const emp of empresas) {
       console.log(`  → Scrapeando ${emp.dominio}...`);
       const mailsScraping = await scrapearSitio(emp.url);
       const mailsHunter = hunterApiKey ? await hunterBuscar(emp.dominio, hunterApiKey) : [];
       const todosLosMails = [...new Set([...mailsScraping, ...mailsHunter.map(h => h.email)])].filter(Boolean);
       const contactoHunter = mailsHunter[0];
-
       if (todosLosMails.length > 0) {
         resultados.push({
-          empresa: emp.titulo,
-          dominio: emp.dominio,
-          url: emp.url,
-          descripcion: emp.descripcion,
-          emails: todosLosMails,
+          empresa: emp.titulo, dominio: emp.dominio, url: emp.url,
+          descripcion: emp.descripcion, emails: todosLosMails,
           emailPrincipal: todosLosMails[0] || '',
           contacto: contactoHunter ? `${contactoHunter.nombre} (${contactoHunter.cargo})`.trim() : '',
           fuentes: [mailsScraping.length > 0 ? 'web' : null, mailsHunter.length > 0 ? 'hunter' : null].filter(Boolean)
@@ -148,7 +145,6 @@ app.post('/buscar-leads', async (req, res) => {
       }
       await new Promise(r => setTimeout(r, 500));
     }
-
     console.log(`✓ ${resultados.length} empresas con mails`);
     res.json({ ok: true, total: resultados.length, resultados });
   } catch (e) {
