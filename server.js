@@ -7,87 +7,163 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const APOLLO_KEY = process.env.APOLLO_KEY || 'Pht5g4UBOIeS7at20MMPNw';
-
-// Industrias por perfil para Apollo
-const INDUSTRIAS = {
-  ecommerce:  ['retail', 'consumer goods', 'apparel & fashion'],
-  moda:       ['apparel & fashion', 'retail', 'luxury goods & jewelry'],
-  alimentos:  ['food & beverages', 'food production', 'restaurants'],
-  gifting:    ['retail', 'consumer goods', 'events services'],
-  belleza:    ['cosmetics', 'health, wellness & fitness', 'consumer goods'],
-  cualquiera: ['retail', 'consumer goods', 'apparel & fashion', 'food & beverages', 'cosmetics'],
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept-Language': 'es-AR,es;q=0.9',
+  'Accept': 'application/json',
 };
 
-// Buscar contactos en Apollo por perfil
-async function buscarEnApollo(perfil, pagina = 1) {
-  const industrias = INDUSTRIAS[perfil] || INDUSTRIAS['cualquiera'];
-  console.log(`🔍 Apollo: perfil=${perfil} industrias=${industrias.join(', ')} página=${pagina}`);
+// Categorías de MercadoLibre por perfil
+const ML_CATEGORIAS = {
+  moda:       [{ id: 'MLA1430', nombre: 'Ropa y Accesorios' }, { id: 'MLA1743', nombre: 'Calzado' }],
+  belleza:    [{ id: 'MLA1246', nombre: 'Belleza y Cuidado' }],
+  alimentos:  [{ id: 'MLA1403', nombre: 'Alimentos y Bebidas' }],
+  gifting:    [{ id: 'MLA1500', nombre: 'Hogar y Decoración' }, { id: 'MLA1144', nombre: 'Juguetes' }],
+  ecommerce:  [{ id: 'MLA1430', nombre: 'Ropa y Accesorios' }, { id: 'MLA1246', nombre: 'Belleza y Cuidado' }],
+  cualquiera: [{ id: 'MLA1430', nombre: 'Ropa y Accesorios' }, { id: 'MLA1246', nombre: 'Belleza y Cuidado' }, { id: 'MLA1403', nombre: 'Alimentos y Bebidas' }],
+};
 
+// Buscar vendedores oficiales en ML por categoría
+async function buscarVendedoresML(categoriaId, offset = 0) {
   try {
-    const res = await axios.post('https://api.apollo.io/v1/mixed_people/search', {
-      api_key: APOLLO_KEY,
-      q_organization_locations: ['Argentina'],
-      organization_industry_tag_ids: [],
-      q_keywords: industrias.join(' OR '),
-      contact_email_status: ['verified', 'guessed'],
-      page: pagina,
-      per_page: 25,
-    }, {
-      headers: { 'Content-Type': 'application/json', 'X-Api-Key': APOLLO_KEY },
-      timeout: 20000
-    });
+    // Buscar items de tiendas oficiales
+    const url = `https://api.mercadolibre.com/sites/MLA/search?category=${categoriaId}&official_store=all&limit=50&offset=${offset}`;
+    const res = await axios.get(url, { headers: HEADERS, timeout: 15000 });
+    const items = res.data?.results || [];
 
-    const people = res.data?.people || [];
-    console.log(`  → ${people.length} contactos de Apollo`);
-
-    return people
-      .filter(p => p.email)
-      .map(p => ({
-        empresa: p.organization?.name || p.employment_history?.[0]?.organization_name || '',
-        contacto: p.name || '',
-        cargo: p.title || '',
-        email: p.email || '',
-        tel: p.phone_numbers?.[0]?.raw_number || '',
-        dominio: p.organization?.website_url?.replace('https://','').replace('http://','').replace('www.','').split('/')[0] || '',
-        descripcion: `${p.title || ''} en ${p.organization?.name || ''} · ${p.organization?.industry || ''}`.trim(),
-        linkedin: p.linkedin_url || '',
-      }));
+    // Extraer seller IDs únicos de tiendas oficiales
+    const sellersMap = new Map();
+    for (const item of items) {
+      const sellerId = item.seller?.id;
+      const storeName = item.official_store_name || item.seller?.nickname;
+      if (sellerId && storeName && !sellersMap.has(sellerId)) {
+        sellersMap.set(sellerId, {
+          id: sellerId,
+          nombre: storeName,
+          permalink: item.seller?.permalink || '',
+        });
+      }
+    }
+    return [...sellersMap.values()];
   } catch (e) {
-    console.error('Apollo error:', e.response?.data || e.message);
+    console.error('ML search error:', e.message);
     return [];
   }
+}
+
+// Obtener info de un vendedor por ID
+async function obtenerInfoVendedor(sellerId) {
+  try {
+    const res = await axios.get(`https://api.mercadolibre.com/users/${sellerId}`, {
+      headers: HEADERS, timeout: 10000
+    });
+    const data = res.data;
+    return {
+      id: sellerId,
+      nombre: data.nickname || '',
+      nombreReal: data.first_name ? `${data.first_name} ${data.last_name || ''}`.trim() : '',
+      email: data.email || '',
+      telefono: data.phone?.number || data.alternative_phone?.number || '',
+      sitioWeb: data.permalink || '',
+      descripcion: data.seller_reputation ? `Vendedor MercadoLibre · ${data.seller_reputation.level_id || ''} · ${data.seller_reputation.transactions?.completed || 0} ventas` : '',
+      ciudad: data.address?.city || '',
+      provincia: data.address?.state || '',
+      tiendaOficial: data.is_official_store || false,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+// Buscar el sitio web de la tienda y extraer mail
+async function buscarWebYMail(nombreTienda) {
+  try {
+    // Usar la API de MercadoLibre para buscar la tienda oficial
+    const res = await axios.get(`https://api.mercadolibre.com/official_stores/search?q=${encodeURIComponent(nombreTienda)}&site_id=MLA`, {
+      headers: HEADERS, timeout: 10000
+    });
+    const stores = res.data || [];
+    if (stores.length > 0) {
+      return stores[0].url || '';
+    }
+    return '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// Extraer mails de HTML
+function extraerMails(html) {
+  const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  const encontrados = [...new Set((html.match(emailRegex) || []))];
+  const excluir = ['example', 'sentry', 'wixpress', 'noreply', 'no-reply', '.png', '.jpg', 'test@', 'mercadolibre', 'mercadopago'];
+  return encontrados.filter(m => !excluir.some(e => m.toLowerCase().includes(e))).slice(0, 3);
 }
 
 // ── RUTAS ─────────────────────────────────────────────────────────────────────
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', servicio: 'Embaflex Finder + Mailer (Apollo)' });
+  res.json({ status: 'ok', servicio: 'Embaflex ML Finder + Mailer' });
 });
 
 app.post('/buscar-leads', async (req, res) => {
   const { perfil = 'ecommerce', pagina = 1 } = req.body;
-  console.log(`🔍 Perfil: ${perfil} | Página: ${pagina}`);
+  const offset = (pagina - 1) * 50;
+  const categorias = ML_CATEGORIAS[perfil] || ML_CATEGORIAS['cualquiera'];
+
+  console.log(`🔍 ML Perfil: ${perfil} | Página: ${pagina}`);
 
   try {
-    const contactos = await buscarEnApollo(perfil, pagina);
+    const todosLosVendedores = [];
+    const idsVistos = new Set();
 
-    const resultados = contactos.map(c => ({
-      empresa: c.empresa || 'Sin nombre',
-      dominio: c.dominio,
-      url: c.dominio ? `https://${c.dominio}` : '',
-      descripcion: c.descripcion,
-      emails: c.email ? [c.email] : [],
-      emailPrincipal: c.email || '',
-      contacto: c.contacto + (c.cargo ? ` (${c.cargo})` : ''),
-      tel: c.tel,
-      linkedin: c.linkedin,
-      tieneMail: !!c.email,
-      fuentes: ['apollo']
-    }));
+    // Buscar en las primeras 2 categorías del perfil
+    for (const cat of categorias.slice(0, 2)) {
+      console.log(`  → Categoría: ${cat.nombre}`);
+      const vendedores = await buscarVendedoresML(cat.id, offset);
+      for (const v of vendedores) {
+        if (!idsVistos.has(v.id)) {
+          idsVistos.add(v.id);
+          todosLosVendedores.push({ ...v, categoria: cat.nombre });
+        }
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    console.log(`  → ${todosLosVendedores.length} tiendas únicas encontradas`);
+
+    // Obtener info detallada de cada vendedor
+    const resultados = [];
+    for (const vendedor of todosLosVendedores.slice(0, 30)) {
+      console.log(`  → Info: ${vendedor.nombre}`);
+      const info = await obtenerInfoVendedor(vendedor.id);
+      if (!info) continue;
+
+      let dominio = '';
+      if (info.sitioWeb) {
+        try { dominio = new URL(info.sitioWeb).hostname.replace('www.', ''); } catch (_) {}
+      }
+
+      resultados.push({
+        empresa: info.nombre || vendedor.nombre,
+        dominio,
+        url: info.sitioWeb || `https://www.mercadolibre.com.ar/tienda/${info.nombre}`,
+        descripcion: info.descripcion + (info.ciudad ? ` · ${info.ciudad}, ${info.provincia}` : ''),
+        emails: info.email ? [info.email] : [],
+        emailPrincipal: info.email || '',
+        contacto: info.nombreReal || '',
+        tel: info.telefono || '',
+        tieneMail: !!info.email,
+        tiendaOficial: info.tiendaOficial,
+        fuentes: ['mercadolibre'],
+        categoria: vendedor.categoria,
+      });
+
+      await new Promise(r => setTimeout(r, 200));
+    }
 
     const conMail = resultados.filter(r => r.tieneMail).length;
-    console.log(`✓ ${resultados.length} contactos, ${conMail} con mail verificado`);
+    console.log(`✓ ${resultados.length} tiendas procesadas, ${conMail} con mail`);
     res.json({ ok: true, total: resultados.length, conMail, resultados });
   } catch (e) {
     console.error('Error:', e.message);
@@ -140,4 +216,4 @@ app.post('/send-bulk', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 Embaflex Apollo Finder en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Embaflex ML Finder en puerto ${PORT}`));
