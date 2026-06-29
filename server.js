@@ -12,60 +12,25 @@ const SERP_API_KEY = process.env.SERP_API_KEY || 'f879550de5bd5e595f2b3f71ca9c11
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept-Language': 'es-AR,es;q=0.9',
+  'Accept': 'text/html,application/xhtml+xml,application/xhtml;q=0.9,*/*;q=0.8',
 };
 
-// Queries especializados por perfil — buscan MARCAS que usan packaging, no proveedores
-const QUERIES_POR_PERFIL = {
-  ecommerce: [
-    'tienda online ropa accesorios argentina envíos a domicilio',
-    'marca propia productos online argentina comprar',
-    'shop online indumentaria argentina pedidos envíos',
-    'tienda online argentina productos artesanales envíos',
-    'ecommerce marca argentina envíos packaging',
-  ],
-  moda: [
-    'marca ropa mujer argentina online envíos',
-    'marca indumentaria argentina tienda online',
-    'diseñadora moda argentina venta online',
-    'marca calzado accesorios argentina online envíos',
-    'emprendimiento moda ropa argentina instagram tienda',
-  ],
-  alimentos: [
-    'marca alimentos artesanales argentina envíos domicilio',
-    'productora alimentos gourmet argentina venta online',
-    'empresa snacks bebidas argentina tienda online',
-    'marca galletitas chocolates argentina online',
-    'emprendimiento food argentina delivery envíos',
-  ],
-  gifting: [
-    'empresa regalos corporativos argentina packaging personalizado',
-    'caja regalo personalizada argentina empresas',
-    'gifting empresarial argentina productos personalizados',
-    'regalos empresas argentina delivery packaging',
-    'cajas regalo armadas argentina envíos',
-  ],
-  belleza: [
-    'marca cosmética skincare argentina online envíos',
-    'emprendimiento belleza productos naturales argentina',
-    'marca cremas perfumes argentina tienda online',
-    'cosméticos artesanales argentina venta online',
-    'marca cuidado personal argentina online packaging',
-  ],
-  cualquiera: [
-    'marca propia argentina tienda online envíos domicilio',
-    'emprendimiento argentino productos propios packaging',
-    'empresa argentina productos venta online envíos',
-    'marca argentina shop online pedidos',
-    'empresa con marca propia argentina vende online',
-  ],
+// Categorías de Tienda Nube por perfil
+const CATEGORIAS_TIENDANUBE = {
+  ecommerce:  ['indumentaria', 'accesorios', 'hogar', 'tecnologia', 'deportes'],
+  moda:       ['indumentaria', 'calzado', 'accesorios', 'bijouterie'],
+  alimentos:  ['alimentos', 'bebidas', 'gourmet'],
+  gifting:    ['regalos', 'decoracion', 'hogar'],
+  belleza:    ['belleza', 'salud', 'cosmetica'],
+  cualquiera: ['indumentaria', 'alimentos', 'belleza', 'regalos', 'accesorios'],
 };
 
 function extraerMails(html) {
   const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
   const encontrados = [...new Set((html.match(emailRegex) || []))];
-  const excluir = ['example', 'sentry', 'wixpress', 'schema', 'jquery', 'email@', 'user@', 'nombre@', 'correo@', 'noreply', 'no-reply', '.png', '.jpg', '.svg', '.gif', 'test@', 'youremail', 'domain.com', 'tu@', 'info@tusitio'];
+  const excluir = ['example', 'sentry', 'wixpress', 'schema', 'jquery', 'email@', 'user@', 'nombre@', 'correo@', 'noreply', 'no-reply', '.png', '.jpg', '.svg', '.gif', 'test@', 'youremail', 'domain.com', 'tusitio', 'tiendanube', 'mitienda'];
   const filtrados = encontrados.filter(m => !excluir.some(e => m.toLowerCase().includes(e)));
-  const prioridad = ['hola', 'contacto', 'marketing', 'info', 'ventas', 'compras', 'admin', 'hello', 'tienda', 'shop'];
+  const prioridad = ['hola', 'info', 'contacto', 'marketing', 'ventas', 'tienda', 'shop', 'admin'];
   filtrados.sort((a, b) => {
     const pa = prioridad.findIndex(p => a.toLowerCase().includes(p));
     const pb = prioridad.findIndex(p => b.toLowerCase().includes(p));
@@ -106,23 +71,43 @@ async function scrapearSitio(url) {
   }
 }
 
-async function buscarConSerpAPI(query) {
-  try {
-    const res = await axios.get('https://serpapi.com/search', {
-      params: { q: query, api_key: SERP_API_KEY, hl: 'es', gl: 'ar', num: 10 },
-      timeout: 15000
-    });
-    const organic = res.data?.organic_results || [];
-    const ignorar = ['google', 'facebook', 'instagram', 'mercadolibre', 'wikipedia', 'youtube', 'twitter', 'linkedin', 'pinterest', 'tiendanube', 'shopify', 'wix', 'wordpress'];
-    return organic.map(r => {
-      let dominio = '';
-      try { dominio = new URL(r.link).hostname.replace('www.', ''); } catch (_) {}
-      return { titulo: r.title, url: r.link, dominio, descripcion: r.snippet || '' };
-    }).filter(r => r.dominio && !ignorar.some(i => r.dominio.includes(i)));
-  } catch (e) {
-    console.error('SerpAPI error:', e.response?.data?.error || e.message);
-    return [];
+// Buscar tiendas en Tienda Nube via SerpAPI (site:mitienda.com.ar o tiendanube)
+async function buscarEnTiendaNube(categoria, zona) {
+  const queries = [
+    `site:mitienda.com.ar ${categoria} ${zona}`,
+    `site:tiendanube.com ${categoria} argentina ${zona}`,
+    `tienda online ${categoria} argentina ${zona} "contacto" email`,
+    `marca ${categoria} argentina envíos domicilio contacto`,
+  ];
+
+  const todasLasEmpresas = [];
+  const dominiosVistos = new Set();
+
+  for (const query of queries) {
+    console.log(`  🔍 Query: "${query}"`);
+    try {
+      const res = await axios.get('https://serpapi.com/search', {
+        params: { q: query, api_key: SERP_API_KEY, hl: 'es', gl: 'ar', num: 10 },
+        timeout: 15000
+      });
+      const organic = res.data?.organic_results || [];
+      const ignorar = ['google', 'facebook', 'wikipedia', 'youtube', 'twitter', 'linkedin', 'pinterest', 'mercadolibre'];
+
+      for (const r of organic) {
+        let dominio = '';
+        try { dominio = new URL(r.link).hostname.replace('www.', ''); } catch (_) {}
+        if (dominio && !dominiosVistos.has(dominio) && !ignorar.some(i => dominio.includes(i))) {
+          dominiosVistos.add(dominio);
+          todasLasEmpresas.push({ titulo: r.title, url: r.link, dominio, descripcion: r.snippet || '' });
+        }
+      }
+    } catch (e) {
+      console.error('SerpAPI error:', e.response?.data?.error || e.message);
+    }
+    await new Promise(r => setTimeout(r, 400));
   }
+
+  return todasLasEmpresas;
 }
 
 async function hunterBuscar(dominio, apiKey) {
@@ -147,9 +132,7 @@ async function hunterBuscar(dominio, apiKey) {
       nombre: [e.first_name, e.last_name].filter(Boolean).join(' '),
       cargo: e.position || '',
     }));
-  } catch (e) {
-    return [];
-  }
+  } catch (e) { return []; }
 }
 
 // ── RUTAS ─────────────────────────────────────────────────────────────────────
@@ -159,39 +142,32 @@ app.get('/', (req, res) => {
 });
 
 app.post('/buscar-leads', async (req, res) => {
-  const { rubro, zona = '', keywords = '', hunterApiKey = '', perfil = 'ecommerce' } = req.body;
-  if (!rubro && !perfil) return res.status(400).json({ error: 'Falta rubro o perfil' });
+  const { zona = 'argentina', hunterApiKey = '', perfil = 'ecommerce' } = req.body;
 
-  // Elegir queries según perfil
-  const queries = QUERIES_POR_PERFIL[perfil] || QUERIES_POR_PERFIL['cualquiera'];
-  // Agregar zona a cada query
-  const queriesConZona = queries.map(q => zona ? `${q} ${zona}` : q);
-
-  console.log(`🔍 Perfil: ${perfil} | Zona: ${zona} | ${queriesConZona.length} queries`);
+  const categorias = CATEGORIAS_TIENDANUBE[perfil] || CATEGORIAS_TIENDANUBE['cualquiera'];
+  console.log(`🔍 Perfil: ${perfil} | Zona: ${zona} | Categorías: ${categorias.join(', ')}`);
 
   try {
-    // Buscar con múltiples queries para más resultados
     const todasLasEmpresas = [];
     const dominiosVistos = new Set();
 
-    for (const query of queriesConZona.slice(0, 3)) { // máx 3 queries para no gastar SerpAPI
-      console.log(`  Query: "${query}"`);
-      const resultados = await buscarConSerpAPI(query);
-      for (const r of resultados) {
-        if (!dominiosVistos.has(r.dominio)) {
-          dominiosVistos.add(r.dominio);
-          todasLasEmpresas.push(r);
+    // Buscar con las primeras 2 categorías del perfil
+    for (const cat of categorias.slice(0, 2)) {
+      const empresas = await buscarEnTiendaNube(cat, zona);
+      for (const e of empresas) {
+        if (!dominiosVistos.has(e.dominio)) {
+          dominiosVistos.add(e.dominio);
+          todasLasEmpresas.push(e);
         }
       }
-      await new Promise(r => setTimeout(r, 300));
     }
 
-    console.log(`  → ${todasLasEmpresas.length} empresas únicas`);
+    console.log(`  → ${todasLasEmpresas.length} empresas únicas encontradas`);
 
-    // Scrapear mails de cada empresa
+    // Scrapear mails
     const resultados = [];
-    for (const emp of todasLasEmpresas.slice(0, 15)) {
-      console.log(`  → Scrapeando ${emp.dominio}...`);
+    for (const emp of todasLasEmpresas.slice(0, 20)) {
+      console.log(`  → ${emp.dominio}`);
       const mailsScraping = await scrapearSitio(emp.url);
       const mailsHunter = hunterApiKey ? await hunterBuscar(emp.dominio, hunterApiKey) : [];
       const todosLosMails = [...new Set([...mailsScraping, ...mailsHunter.map(h => h.email)])].filter(Boolean);
@@ -209,10 +185,10 @@ app.post('/buscar-leads', async (req, res) => {
           fuentes: [mailsScraping.length > 0 ? 'web' : null, mailsHunter.length > 0 ? 'hunter' : null].filter(Boolean)
         });
       }
-      await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 300));
     }
 
-    console.log(`✓ ${resultados.length} empresas con mails`);
+    console.log(`✓ ${resultados.length} con mails`);
     res.json({ ok: true, total: resultados.length, resultados });
   } catch (e) {
     console.error('Error:', e.message);
