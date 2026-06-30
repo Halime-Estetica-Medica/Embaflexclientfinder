@@ -177,7 +177,10 @@ app.post('/send-email', async (req, res) => {
   const transporter = nodemailer.createTransport({
     host: smtp.host, port: parseInt(smtp.port) || 587,
     secure: parseInt(smtp.port) === 465,
-    auth: { user: smtp.user, pass: smtp.pass }
+    auth: { user: smtp.user, pass: smtp.pass },
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 15000,
   });
   try {
     const info = await transporter.sendMail({
@@ -186,7 +189,10 @@ app.post('/send-email', async (req, res) => {
       html: (text || '').replace(/\n/g, '<br>')
     });
     res.json({ ok: true, messageId: info.messageId });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('Error SMTP:', e.message, e.code || '');
+    res.status(500).json({ error: e.message, code: e.code || '' });
+  }
 });
 
 app.post('/send-bulk', async (req, res) => {
@@ -196,7 +202,10 @@ app.post('/send-bulk', async (req, res) => {
   const transporter = nodemailer.createTransport({
     host: smtp.host, port: parseInt(smtp.port) || 587,
     secure: parseInt(smtp.port) === 465,
-    auth: { user: smtp.user, pass: smtp.pass }
+    auth: { user: smtp.user, pass: smtp.pass },
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 15000,
   });
   const results = [];
   for (const r of recipients) {
@@ -210,7 +219,10 @@ app.post('/send-bulk', async (req, res) => {
       });
       results.push({ email: r.email, status: 'ok' });
       await new Promise(r => setTimeout(r, 1500));
-    } catch (e) { results.push({ email: r.email, status: 'error', mensaje: e.message }); }
+    } catch (e) {
+      console.error('Error SMTP bulk:', r.email, e.message, e.code || '');
+      results.push({ email: r.email, status: 'error', mensaje: e.message });
+    }
   }
   res.json({ ok: true, results });
 });
