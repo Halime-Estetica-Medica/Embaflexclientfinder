@@ -106,6 +106,16 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', servicio: 'Embaflex ML Finder + Mailer' });
 });
 
+// Endpoint para conocer la IP saliente de Railway (para whitelistear en el firewall del mail)
+app.get('/mi-ip', async (req, res) => {
+  try {
+    const r = await axios.get('https://api.ipify.org?format=json', { timeout: 8000 });
+    res.json({ ip_saliente: r.data.ip, nota: 'Esta es la IP que tenés que autorizar en el firewall del servidor de mail.' });
+  } catch (e) {
+    res.status(500).json({ error: 'No se pudo obtener la IP: ' + e.message });
+  }
+});
+
 app.post('/buscar-leads', async (req, res) => {
   const { perfil = 'ecommerce', pagina = 1 } = req.body;
   const offset = (pagina - 1) * 50;
